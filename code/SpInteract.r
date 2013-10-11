@@ -19,9 +19,9 @@ if(n>100)  knots=as.matrix(makegrid(SpatialPoints(coords),n=100))
 theta <- rep(3/50,q) 
 
 ### Now make species interaction matrix
-nltr <- q*(q-1)/2+q  #number of values in lower triangle
+nltr <- q*(q+1)/2  #number of values in lower triangle
 A <- matrix(0,q,q)
-A[lower.tri(A,TRUE)] <- rep(c(1,-1),2) #rnorm(nltr,1,1)
+A[lower.tri(A,TRUE)] <- rep(c(1,-1),nltr/2) #rnorm(nltr,1,1)
 K <- A%*%t(A)
 
 ## cor(K) is the interaction matrix as we think of it
@@ -34,14 +34,11 @@ Psi <- diag(0,q)
 ## Construct multivariate predictive process covariance matrices
 ## following example in spBayes spMvGLM function
 ## in this case the knots are the same as the points, so essentially this is just a 'normal' point-process model...
-c1 <- mvCovInvLogDet(coords=coords, knots=knots,
-                     cov.model="exponential",
-                     V=K, Psi=Psi, theta=theta,
-                     modified.pp=TRUE, SWM=FALSE)
+c1 <- mkSpCov(coords=coords, K=K, Psi=Psi,theta=theta,cov.model="exponential")
 
 ## generate the spatial-species effects for each species in each location
 ## note this is a n x q vector 
-w <- mvrnorm(1,rep(0,nrow(c1$C)),c1$C)
+w <- mvrnorm(1,rep(0,nrow(c1)),c1)
 
 ## make some simple environmental data, here all ones to indicate constant environment.
 ## Given m univariate design matrices, the function mkMvX creates a multivariate design matrix
@@ -52,13 +49,11 @@ beta <- c(-1,0,1)
 
 ## generate the response data - counts of each species at each point
 y <- rpois(n*q, exp(X%*%beta+w))
-## separate these into separate vectors
-y.1 <- y[seq(1,length(y),q)]
-y.2 <- y[seq(2,length(y),q)]
-y.3 <- y[seq(3,length(y),q)]
+## convert that to a location x species matrix of abundances
+y=matrix(y,ncol=q,byrow=T)
 
-## speciesID vector
-spid=rep(1:3,length(y))
+## y is now our species abundance data for three species
+head(y)
 
 ## build spatial dataframe for plotting
 #d=data.frame(x=coords[,1],y=coords[,2],spid=spid,abun=y)
@@ -66,7 +61,7 @@ spid=rep(1:3,length(y))
 
 ## look at species locations and abundances
 scale=max(y)/8  #simple scale to make circles pleasing, adjust if too big or too small
-plot(coords,cex=y.1/scale,col="red",main="Example species abundances at various locations generated with species interaction matrix",ylab="Y",xlab="X")
+plot(coords,cex=y[,1]/scale,col="red",main="Example species abundances at various locations generated with species interaction matrix",ylab="Y",xlab="X")
 points(coords,cex=y.2/scale,col="green")
 points(coords,cex=y.3/scale,col="blue")
 points(knots,pch=3)
