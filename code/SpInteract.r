@@ -1,5 +1,22 @@
 library(spBayes);library(MASS);library(MBA);library(fields)
-library(reshape);library(latticeExtra)
+library(reshape);library(latticeExtra);library(rasterVis)
+
+
+### Simulating species occurrence data
+#_____________________________________
+
+
+
+# == Set up environment ====
+xmax=100
+ymax=100 
+
+
+## simple environment with two variables/gradients
+env1=raster(matrix(rep(seq(0,1,len=ymax),xmax),xmax,ymax))
+env2=raster(matrix(rep(seq(0,1,len=xmax),ymax),xmax,ymax,byrow=T))
+env=stack(env1,env2);names(env)=c("env1","env2")
+levelplot(env)
 
 ################################
 ##Spatial multivariate poisson
@@ -9,7 +26,7 @@ n <- 100 # number of locations
 q <- 3   # number of 'species'
 
 #make some locations
-coords <- cbind.data.frame(x=runif(n,1,100),y=runif(n,1,100))  
+coords <- cbind.data.frame(x=runif(n,0,1),y=runif(n,0,1))  
 
 ## generate the knots at which the spatial effects are captured
 if(n<=100) knots=coords
@@ -22,6 +39,7 @@ theta <- rep(3/50,q)
 nltr <- q*(q+1)/2  #number of values in lower triangle
 A <- matrix(0,q,q)
 A[lower.tri(A,TRUE)] <- rep(c(1,-1),nltr/2) #rnorm(nltr,1,1)
+A[lower.tri(A,TRUE)] <- rnorm(nltr,1,1)
 K <- A%*%t(A)
 
 ## cor(K) is the interaction matrix as we think of it
@@ -42,10 +60,12 @@ w <- mvrnorm(1,rep(0,nrow(c1)),c1)
 
 ## make some simple environmental data, here all ones to indicate constant environment.
 ## Given m univariate design matrices, the function mkMvX creates a multivariate design matrix
-X <- mkMvX(list(matrix(1,n,1), matrix(1,n,1), matrix(1,n,1)))
+envp=extract(env,coords)
+#X <- mkMvX(list(matrix(1,n,1), matrix(1,n,1), matrix(1,n,1)))
+X <- mkMvX(lapply(1:q,function(i) return(envp)))
 
 ## specify betas (species respond differently to the same environment)
-beta <- c(-1,0,1)
+beta <- c(-1,0,1,0,1,-1)
 
 ## generate the response data - counts of each species at each point
 y <- rpois(n*q, exp(X%*%beta+w))
@@ -76,33 +96,40 @@ splom(yw)
 ############################################################################
 ## now fit spMvGLM to recover species interactions and spatial effects from the data
 
+## Make formulas  - need to update this to match environmental data 
+frmls=lapply(1:q,function(i) 
+  formula(paste("yw[,",i,"]~",
+                   paste("envp[,",1:ncol(envp),"]",collapse="+",sep=""),"-1",
+                   sep="")))
+
 ##Specify starting values and collect samples. For
 ##a true analysis, several longer chains should be
 ##run.
 A.starting <- diag(1,q)[lower.tri(diag(1,q), TRUE)]
-beta.starting <- coefficients(glm(y~X-1, family="poisson"))
+beta.starting <- coefficients(glm(y~X-1, family="poisson"))/10
 beta.tuning <- t(chol(vcov(glm(y~X-1, family="poisson"))))
-n.samples <- 10000
+n.samples <- 1000
 
-## Make formulas  - need to update this to match environmental data 
-frmls=lapply(1:q,function(i) as.formula(paste("yw[,",i,"]~1",sep="")))
+writeLines(as.character(frmls))
 
 m.1 <- spMvGLM(frmls, family="poisson", coords=as.matrix(coords),
-               starting= list("beta"=beta.starting, "phi"=rep(0.06,q),
+               starting= list("beta"=beta.starting, "phi"=rep(0.006,q),
                  "A"=A.starting, "w"=0),
-               tuning=list("beta"=beta.tuning, "phi"=rep(0.01,q),
+               tuning=list("beta"=beta.tuning, "phi"=rep(0.001,q),
                  "A"=rep(0.005,nltr), "w"=0.001),
-               priors=list("beta.Flat", "phi.Unif"=list(rep(0.03,q),rep(0.3,q)),
+               priors=list("beta.Flat", "phi.Unif"=list(rep(0.003,q),rep(0.3,q)),
                  "K.IW"=list(q+1, diag(0.1,q))),
                cov.model="exponential",
-               n.samples=n.samples,
-               verbose=TRUE, n.report=500)
+               amcmc=list(n.batch=100,batch.length=50,accept.rate=0.43),
+               verbose=TRUE, n.report=10)
 
 ######################################
 ### Summarize posteriors
 
 ## check out the chains
-xyplot(m.1$p.beta.theta.samples)
+xyplot(m.1$p.beta.theta.samples[,grep("envp",colnames(m.1$p.beta.theta.samples))])
+xyplot(m.1$p.beta.theta.samples[,grep("K",colnames(m.1$p.beta.theta.samples))],
+       scales=list(y=list(relation="free")))
 
 ## create new object with just the posterior samples
 post=window(m.1$p.beta.theta.samples,start=n.samples*.75)
@@ -111,7 +138,7 @@ post=window(m.1$p.beta.theta.samples,start=n.samples*.75)
 #m.1$p.samples[,paste("phi_",1:q,sep="")] <- 3/m.1$p.samples[,paste("phi_",1:q,sep="")]
 #colnames(m.1$p.beta.theta.samples)
 print(summary(mcmc(post)))
-beta.hat <- apply(post[,1:q],2,mean)
+beta.hat <- apply(post[,grep("envp",colnames(post))],2,mean)
 w.hat <- rowMeans(m.1$p.w.samples)
 y.hat <- exp((X%*%beta.hat)+w.hat)
 ## reshape it for easier plotting
@@ -133,11 +160,11 @@ cor(K)  # original matrix
 #}
 
 ### Build a single dataframe to hold the observed and predicted
-dp=cbind.data.frame(coords,sp=spind,y=y,yhat=y.hat,w=w.hat)
+dp=cbind.data.frame(coords,sp=spind,yobs=y,yhat=y.hat,w=w.hat)
 
 dpl=melt(dp,id.vars=c("x","y","sp"))
 
-xyplot(yhat~y,data=dp,groups=sp)+layer(panel.abline(0,1))
+xyplot(yhat~yobs,data=dp,groups=sp)+layer(panel.abline(0,1))
 
 ##Take a look at spatial patterns
 par(mfrow=c(1,2))
